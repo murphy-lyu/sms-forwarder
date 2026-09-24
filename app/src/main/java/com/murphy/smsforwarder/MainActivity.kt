@@ -7,8 +7,6 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -53,6 +51,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -65,6 +65,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,14 +83,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.murphy.smsforwarder.ui.theme.SMSForwarderTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun attachBaseContext(newBase: Context) {
@@ -99,24 +99,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        autoStartServiceIfConfigured()
         setContent { SMSForwarderTheme { MainScreen() } }
-    }
-
-    private fun autoStartServiceIfConfigured() {
-        val prefs = getSharedPreferences(ForwardService.PREFS_NAME, Context.MODE_PRIVATE)
-        val telegramConfigured = !prefs.getString(ForwardService.KEY_BOT_TOKEN, "").isNullOrBlank()
-        val smsConfigured = !prefs.getString(ForwardService.KEY_SMS_RECIPIENT, "").isNullOrBlank()
-        val serviceEnabled = prefs.getBoolean(
-            ForwardService.KEY_SERVICE_ENABLED,
-            telegramConfigured || smsConfigured
-        )
-        if ((telegramConfigured || smsConfigured) && serviceEnabled) {
-            Log.d("SMSForwarder", "Starting ForwardService")
-            startForegroundService(Intent(this, ForwardService::class.java))
-        } else {
-            Log.d("SMSForwarder", "No forwarding route configured, skipping auto-start")
-        }
     }
 }
 
@@ -124,8 +107,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+    val configurationSavedMessage = stringResource(R.string.configuration_saved)
+    val rulesSavedMessage = stringResource(R.string.rules_saved)
     val prefs = remember { context.getSharedPreferences(ForwardService.PREFS_NAME, Context.MODE_PRIVATE) }
-    val powerManager = remember { context.getSystemService(Context.POWER_SERVICE) as PowerManager }
     var botToken by remember { mutableStateOf(prefs.getString(ForwardService.KEY_BOT_TOKEN, "").orEmpty()) }
     var chatId by remember { mutableStateOf(prefs.getString(ForwardService.KEY_CHAT_ID, "").orEmpty()) }
     var smsRecipient by remember {
@@ -151,20 +137,6 @@ fun MainScreen() {
     var configEditing by remember { mutableStateOf(botToken.isBlank() || chatId.isBlank()) }
     var smsConfigEditing by remember { mutableStateOf(smsRecipient.isBlank()) }
     var detailPage by remember { mutableStateOf(DetailPage.NONE) }
-    var batteryAllowed by remember {
-        mutableStateOf(powerManager.isIgnoringBatteryOptimizations(context.packageName))
-    }
-
-    DisposableEffect(Unit) {
-        val observer = object : DefaultLifecycleObserver {
-            override fun onResume(owner: LifecycleOwner) {
-                batteryAllowed = powerManager.isIgnoringBatteryOptimizations(context.packageName)
-            }
-        }
-        (context as ComponentActivity).lifecycle.addObserver(observer)
-        onDispose { context.lifecycle.removeObserver(observer) }
-    }
-
     DisposableEffect(prefs) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == ForwardService.KEY_LOGS) logs = loadLogs(prefs)
@@ -179,34 +151,22 @@ fun MainScreen() {
     LaunchedEffect(Unit) {
         val needed = buildList {
             add(Manifest.permission.RECEIVE_SMS)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
         }.filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
         if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
     }
 
     val telegramConfigured = botToken.isNotBlank() && chatId.isNotBlank()
     val smsConfigured = smsRecipient.isNotBlank()
-    val openBatterySettings = {
-        context.startActivity(
-            Intent(
-                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                Uri.parse("package:${context.packageName}")
-            )
-        )
-    }
     val setServiceRunning: (Boolean) -> Unit = { running ->
         serviceRunning = running
         prefs.edit().putBoolean(ForwardService.KEY_SERVICE_ENABLED, running).apply()
-        val serviceIntent = Intent(context, ForwardService::class.java)
-        if (running) context.startForegroundService(serviceIntent) else context.stopService(serviceIntent)
     }
 
     BackHandler(detailPage != DetailPage.NONE) { detailPage = DetailPage.NONE }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             AppTopBar(
                 title = when (detailPage) {
@@ -243,6 +203,9 @@ fun MainScreen() {
                         .putString(ForwardService.KEY_CHAT_ID, chatId.trim())
                         .apply()
                     configEditing = false
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(configurationSavedMessage)
+                    }
                 },
                 onTelegramEnabledChange = { enabled ->
                     telegramEnabled = enabled
@@ -261,6 +224,9 @@ fun MainScreen() {
                         .putString(ForwardService.KEY_FILTER_KEYWORDS, keywords)
                         .remove(ForwardService.KEY_FORWARD_ALL)
                         .apply()
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(rulesSavedMessage)
+                    }
                 }
             )
             DetailPage.SMS -> SmsRoutePage(
@@ -278,6 +244,9 @@ fun MainScreen() {
                         .putString(ForwardService.KEY_SMS_RECIPIENT, smsRecipient)
                         .commit()
                     smsConfigEditing = false
+                    coroutineScope.launch {
+                        snackbarHostState.showSnackbar(configurationSavedMessage)
+                    }
                 },
                 onEnabledChange = { enabled ->
                     smsEnabled = enabled
@@ -285,10 +254,7 @@ fun MainScreen() {
                 }
             )
             DetailPage.SETTINGS -> SettingsPage(
-                padding = padding,
-                batteryAllowed = batteryAllowed,
-                onBack = { detailPage = DetailPage.NONE },
-                onBatterySettings = openBatterySettings
+                padding = padding
             )
             DetailPage.HISTORY -> LogsPage(
                 padding = padding,
@@ -303,11 +269,9 @@ fun MainScreen() {
                 smsEnabled = smsEnabled,
                 smsConfigured = smsConfigured,
                 filterMode = filterMode,
-                batteryAllowed = batteryAllowed,
                 logs = logs,
                 onSettings = { detailPage = DetailPage.SETTINGS },
                 onServiceChange = setServiceRunning,
-                onBatterySettings = openBatterySettings,
                 onOpenTelegram = { detailPage = DetailPage.TELEGRAM },
                 onOpenSms = { detailPage = DetailPage.SMS },
                 onOpenRules = { detailPage = DetailPage.RULES },
@@ -375,11 +339,9 @@ private fun HomePage(
     smsEnabled: Boolean,
     smsConfigured: Boolean,
     filterMode: MessageFilterMode,
-    batteryAllowed: Boolean,
     logs: List<ForwardLog>,
     onSettings: () -> Unit,
     onServiceChange: (Boolean) -> Unit,
-    onBatterySettings: () -> Unit,
     onOpenTelegram: () -> Unit,
     onOpenSms: () -> Unit,
     onOpenRules: () -> Unit,
@@ -404,9 +366,6 @@ private fun HomePage(
                     compact = true
                 )
             }
-        }
-        if (!batteryAllowed) {
-            item { BatteryBanner(onOpenSettings = onBatterySettings) }
         }
         item { RulesSummaryCard(filterMode, onOpenRules) }
         item {
@@ -839,10 +798,7 @@ private fun RulesPage(
 
 @Composable
 private fun SettingsPage(
-    padding: PaddingValues,
-    batteryAllowed: Boolean,
-    onBack: () -> Unit,
-    onBatterySettings: () -> Unit
+    padding: PaddingValues
 ) {
     val context = LocalContext.current
     var languageDialogVisible by remember { mutableStateOf(false) }
@@ -851,8 +807,6 @@ private fun SettingsPage(
     val smsAllowed = ContextCompat.checkSelfPermission(
         context, Manifest.permission.RECEIVE_SMS
     ) == PackageManager.PERMISSION_GRANTED
-    val notificationAllowed = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU ||
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(padding),
@@ -861,10 +815,7 @@ private fun SettingsPage(
     ) {
         item {
             AppCard {
-                SectionHeader(
-                    stringResource(R.string.language),
-                    stringResource(R.string.language_description)
-                )
+                SectionHeader(stringResource(R.string.language))
                 Spacer(Modifier.height(10.dp))
                 LanguageRow(
                     language = selectedLanguage,
@@ -874,24 +825,14 @@ private fun SettingsPage(
         }
         item {
             AppCard {
-                SectionHeader(
-                    stringResource(R.string.runtime_protection),
-                    stringResource(R.string.runtime_protection_description)
-                )
+                SectionHeader(stringResource(R.string.runtime_protection))
                 Spacer(Modifier.height(14.dp))
                 PermissionRow(stringResource(R.string.permission_sms), smsAllowed)
-                PermissionRow(stringResource(R.string.permission_notifications), notificationAllowed)
-                PermissionRow(
-                    stringResource(R.string.permission_battery),
-                    batteryAllowed,
-                    if (!batteryAllowed) onBatterySettings else null
-                )
-                PermissionRow(stringResource(R.string.permission_boot), true)
             }
         }
         item {
             AppCard {
-                SectionHeader(stringResource(R.string.about), stringResource(R.string.app_name))
+                SectionHeader(stringResource(R.string.about))
                 Spacer(Modifier.height(10.dp))
                 AboutInfoRow(
                     label = stringResource(R.string.version),
@@ -1724,6 +1665,18 @@ private fun LogItem(
     val timeText = remember(log.timestamp) {
         SimpleDateFormat("MM-dd  HH:mm:ss", Locale.getDefault()).format(Date(log.timestamp))
     }
+    val routeLabel = when (log.route) {
+        ForwardStore.ROUTE_TELEGRAM -> stringResource(R.string.route_telegram_short)
+        ForwardStore.ROUTE_SMS -> stringResource(R.string.route_sms_short)
+        else -> null
+    }
+    val statusLabel = stringResource(
+        when {
+            log.pending -> R.string.log_pending
+            log.success -> R.string.log_sent
+            else -> R.string.log_failed
+        }
+    )
     Card(
         modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -1733,16 +1686,26 @@ private fun LogItem(
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
             Box(
                 Modifier.size(38.dp).background(
-                    if (log.success) MaterialTheme.colorScheme.secondaryContainer
-                    else MaterialTheme.colorScheme.errorContainer,
+                    when {
+                        log.pending -> MaterialTheme.colorScheme.surfaceVariant
+                        log.success -> MaterialTheme.colorScheme.secondaryContainer
+                        else -> MaterialTheme.colorScheme.errorContainer
+                    },
                     CircleShape
                 ),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    if (log.success) "↑" else "!",
-                    color = if (log.success) MaterialTheme.colorScheme.onSecondaryContainer
-                    else MaterialTheme.colorScheme.onErrorContainer,
+                    when {
+                        log.pending -> "…"
+                        log.success -> "↑"
+                        else -> "!"
+                    },
+                    color = when {
+                        log.pending -> MaterialTheme.colorScheme.onSurfaceVariant
+                        log.success -> MaterialTheme.colorScheme.onSecondaryContainer
+                        else -> MaterialTheme.colorScheme.onErrorContainer
+                    },
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1757,10 +1720,16 @@ private fun LogItem(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        stringResource(if (log.success) R.string.log_sent else R.string.log_failed),
+                        buildString {
+                            if (routeLabel != null) append(routeLabel).append(" · ")
+                            append(statusLabel)
+                        },
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (log.success) MaterialTheme.colorScheme.secondary
-                        else MaterialTheme.colorScheme.error
+                        color = when {
+                            log.pending -> MaterialTheme.colorScheme.onSurfaceVariant
+                            log.success -> MaterialTheme.colorScheme.secondary
+                            else -> MaterialTheme.colorScheme.error
+                        }
                     )
                 }
                 Spacer(Modifier.height(5.dp))

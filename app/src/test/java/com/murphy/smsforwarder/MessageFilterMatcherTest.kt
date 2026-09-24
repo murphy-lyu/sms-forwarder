@@ -39,4 +39,14 @@ class MessageFilterMatcherTest {
     fun parsesSupportedKeywordSeparators() {
         assertTrue(MessageFilterMatcher.matchesKeywords("Your parcel is ready", "银行，parcel;账单\n快递"))
     }
+
+    @Test
+    fun emptyKeywordsNeverMatch() {
+        assertFalse(MessageFilterMatcher.matchesKeywords("Any message", " ,；\n"))
+    }
+
+    @Test
+    fun matchesStandalonePinKeyword() {
+        assertTrue(MessageFilterMatcher.matchesOtp("Your PIN is 482913"))
+    }
 }

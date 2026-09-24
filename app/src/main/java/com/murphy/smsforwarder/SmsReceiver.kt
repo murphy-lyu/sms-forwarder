@@ -64,9 +64,6 @@ class SmsReceiver : BroadcastReceiver() {
                 if (smsEnabled) {
                     val success = SmsForwarder.send(appContext, sender, body)
                     Log.d("SMSForwarder", "Immediate SMS dispatch result: success=$success")
-                    if (pending == null) {
-                        ForwardStore.record(appContext, sender, body, success)
-                    }
                 }
                 pending?.let {
                     val result = ForwardStore.attempt(appContext, it.id)

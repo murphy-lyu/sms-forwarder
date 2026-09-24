@@ -17,6 +17,8 @@
     <string name="action_save">保存</string>
     <string name="action_done">完成</string>
     <string name="action_save_changes">保存更改</string>
+    <string name="configuration_saved">配置已保存</string>
+    <string name="rules_saved">转发规则已保存</string>
     <string name="action_edit_configuration">修改配置</string>
     <string name="action_send_test_message">发送测试消息</string>
     <string name="action_send_test_sms">发送测试短信</string>
@@ -135,4 +137,8 @@
     <string name="test_sms_failure">提交失败，请检查手机号、SIM 卡和短信权限</string>
     <string name="sms_forward_message_template">SMS Forwarder\n来自：%1$s\n%2$s</string>
     <string name="sms_test_message_template">SMS Forwarder 测试短信</string>
+    <string name="test_message_sender">测试消息</string>
+    <string name="log_pending">等待结果</string>
+    <string name="route_telegram_short">Telegram</string>
+    <string name="route_sms_short">短信</string>
 </resources>

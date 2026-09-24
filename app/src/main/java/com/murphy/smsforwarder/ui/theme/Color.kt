@@ -2,10 +2,11 @@ package com.murphy.smsforwarder.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
-
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+val DeepTeal = Color(0xFF176B67)
+val Teal = Color(0xFF20A486)
+val Mint = Color(0xFFC9F2E6)
+val IMessageBlue = Color(0xFF0A84FF)
+val Coral = Color(0xFFD85C57)
+val WarmSurface = Color(0xFFF4F7F8)
+val Ink = Color(0xFF172126)
+val MutedInk = Color(0xFF667278)

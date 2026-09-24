@@ -11,7 +11,11 @@ class BootReceiver : BroadcastReceiver() {
         if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
 
         val prefs = context.getSharedPreferences(ForwardService.PREFS_NAME, Context.MODE_PRIVATE)
-        if (!prefs.getString(ForwardService.KEY_BOT_TOKEN, "").isNullOrBlank()) {
+        val telegramConfigured = !prefs.getString(ForwardService.KEY_BOT_TOKEN, "").isNullOrBlank()
+        val smsConfigured = !prefs.getString(ForwardService.KEY_SMS_RECIPIENT, "").isNullOrBlank()
+        val hasRoute = telegramConfigured || smsConfigured
+        val serviceEnabled = prefs.getBoolean(ForwardService.KEY_SERVICE_ENABLED, hasRoute)
+        if (hasRoute && serviceEnabled) {
             Log.d("SMSForwarder", "BootReceiver: starting ForwardService (action=$action)")
             context.startForegroundService(Intent(context, ForwardService::class.java))
         }

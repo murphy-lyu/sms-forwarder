@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import android.util.Log
+import java.util.concurrent.Executors
 
 class SmsReceiver : BroadcastReceiver() {
 
@@ -19,34 +20,65 @@ class SmsReceiver : BroadcastReceiver() {
         val body = messages.joinToString("") { it.messageBody }
 
         val prefs = context.getSharedPreferences(ForwardService.PREFS_NAME, Context.MODE_PRIVATE)
-        val forwardAll = prefs.getBoolean(ForwardService.KEY_FORWARD_ALL, false)
-        val isOtp = forwardAll || isOtpMessage(body)
-
-        Log.d("SMSForwarder", "SMS received from: $sender, body: $body")
-        Log.d("SMSForwarder", "forwardAll=$forwardAll, isOtp=$isOtp")
-
-        if (!isOtp) return
-
-        val serviceIntent = Intent(context, ForwardService::class.java).apply {
-            action = ForwardService.ACTION_FORWARD
-            putExtra(ForwardService.EXTRA_SENDER, sender)
-            putExtra(ForwardService.EXTRA_MESSAGE, body)
+        val telegramConfigured = !prefs.getString(ForwardService.KEY_BOT_TOKEN, "").isNullOrBlank() &&
+            !prefs.getString(ForwardService.KEY_CHAT_ID, "").isNullOrBlank()
+        val smsConfigured = !prefs.getString(ForwardService.KEY_SMS_RECIPIENT, "").isNullOrBlank()
+        if (!prefs.getBoolean(ForwardService.KEY_SERVICE_ENABLED, telegramConfigured || smsConfigured)) {
+            Log.d("SMSForwarder", "SMS monitoring is disabled")
+            return
         }
-        context.startForegroundService(serviceIntent)
-    }
+        val telegramEnabled = telegramConfigured &&
+            prefs.getBoolean(ForwardService.KEY_TELEGRAM_ENABLED, true)
+        val smsEnabled = smsConfigured && prefs.getBoolean(ForwardService.KEY_SMS_ENABLED, false)
+        if (!telegramEnabled && !smsEnabled) {
+            Log.d("SMSForwarder", "No forwarding route is enabled")
+            return
+        }
+        val filterMode = MessageFilterMode.fromPreferences(prefs)
+        val shouldForward = when (filterMode) {
+            MessageFilterMode.OTP_ONLY -> MessageFilterMatcher.matchesOtp(body)
+            MessageFilterMode.KEYWORDS -> MessageFilterMatcher.matchesKeywords(
+                body,
+                prefs.getString(ForwardService.KEY_FILTER_KEYWORDS, "").orEmpty()
+            )
+            MessageFilterMode.ALL -> true
+        }
 
-    // Both a keyword AND a 4-8 digit sequence must be present
-    private fun isOtpMessage(text: String): Boolean {
-        val lower = text.lowercase()
-        val hasKeyword = OTP_KEYWORDS.any { lower.contains(it) }
-        val hasDigitSequence = text.contains(Regex("\\d{4,8}"))
-        return hasKeyword && hasDigitSequence
+        Log.d("SMSForwarder", "SMS received from: $sender, length=${body.length}")
+        Log.d("SMSForwarder", "filterMode=${filterMode.value}, shouldForward=$shouldForward")
+
+        if (!shouldForward) return
+
+        val appContext = context.applicationContext
+        val pending = if (telegramEnabled) {
+            ForwardStore.enqueue(appContext, sender, body).also {
+                ForwardWorker.schedule(appContext, it.id)
+            }
+        } else {
+            null
+        }
+
+        val asyncResult = goAsync()
+        executor.execute {
+            try {
+                if (smsEnabled) {
+                    val success = SmsForwarder.send(appContext, sender, body)
+                    Log.d("SMSForwarder", "Immediate SMS dispatch result: success=$success")
+                    if (pending == null) {
+                        ForwardStore.record(appContext, sender, body, success)
+                    }
+                }
+                pending?.let {
+                    val result = ForwardStore.attempt(appContext, it.id)
+                    Log.d("SMSForwarder", "Immediate Telegram result: $result")
+                }
+            } finally {
+                asyncResult.finish()
+            }
+        }
     }
 
     companion object {
-        private val OTP_KEYWORDS = listOf(
-            "验证码", "验证", "码", "动态密码", "一次性密码",
-            "code", "otp", "verify", "verification", "activation", "password"
-        )
+        private val executor = Executors.newSingleThreadExecutor()
     }
 }
